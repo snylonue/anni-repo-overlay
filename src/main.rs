@@ -6,6 +6,7 @@ use std::{
     process::Command,
 };
 
+use anni_repo::RepositoryManager;
 use anyhow::anyhow;
 use clap::Parser;
 use serde::Deserialize;
@@ -32,6 +33,7 @@ struct Repo {
 }
 
 fn git_clone(url: &str, to: &str) -> anyhow::Result<()> {
+    log::info!("cloning {url} to {to}");
     let cmd = Command::new("git").args(["clone", url, to]).output()?;
     if cmd.status.success() {
         Ok(())
@@ -54,12 +56,14 @@ fn git_clone_if_nonexist(url: &str, to: &str) -> anyhow::Result<bool> {
 
 // returns true if alread up-to-date
 fn git_pull(root: &str) -> anyhow::Result<bool> {
+    log::info!("pulling {root}");
     let cmd = Command::new("git")
         .args(["pull", "--ff-only"])
         .current_dir(root)
         .output()?;
 
     if cmd.status.success() {
+        log::info!("{root} already up to date");
         Ok(String::from_utf8_lossy(&cmd.stdout).contains("Already up to date."))
     } else {
         Err(anyhow!("fail to pull repo at {root}"))
@@ -71,17 +75,14 @@ fn anni_overlay<'a>(
     overlays: impl Iterator<Item = &'a str>,
     to: &Path,
 ) -> anyhow::Result<()> {
-    let cmd = Command::new("anni")
-        .args(["repo", "--root", base, "overlay"])
-        .args(overlays.map(|overlay| ["--overlay", overlay]).flatten())
-        .arg(to)
-        .status()?;
+    log::info!("generating database");
+    let base_repo = RepositoryManager::new(base)?.into_owned_manager()?;
+    let overlays_repo = overlays
+        .map(|overlay| RepositoryManager::new(overlay).and_then(|repo| repo.into_owned_manager()))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    if cmd.success() {
-        Ok(())
-    } else {
-        Err(anyhow!("fail to generate database"))
-    }
+    base_repo.apply_overlay(overlays_repo, to.join("repo.db"))?;
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -117,13 +118,13 @@ fn main() -> anyhow::Result<()> {
     if is_fresh
         || !fs::exists(app.output_directory.join("repo.db"))?
         || !fs::exists(app.output_directory.join("repo.json"))?
-    {}
-
-    anni_overlay(
-        &config.base.name,
-        config.overlay.iter().map(|Repo { name, .. }| name.as_str()),
-        &app.output_directory,
-    )?;
+    {
+        anni_overlay(
+            &config.base.name,
+            config.overlay.iter().map(|Repo { name, .. }| name.as_str()),
+            &app.output_directory,
+        )?;
+    }
 
     Ok(())
 }
